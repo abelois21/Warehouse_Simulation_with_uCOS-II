@@ -2,12 +2,7 @@
 *********************************************************************************************************
 *                                                uC/OS-II
 *                                          The Real-Time Kernel
-*
-*					WIN32 PORT & LINUX PORT
-*                          (c) Copyright 2004-... Werner.Zimmermann@fht-esslingen.de
-*                                           All Rights Reserved
-*
-*               This file should contain application specific definitions, required since V2.8x
+*					
 *********************************************************************************************************
 */
 
@@ -90,6 +85,8 @@ Pos popPQ(PQ* root);
 void swap(PQ* root, INT16U idx1, INT16U idx2);
 
 void AStarSearch(Pos* route, const INT8U(*isBlocked)[WIDTH], INT16U* n_route, const Pos start, const Pos arrive);
+
+void debug_print_value(INT8U row, INT8U n, va_list arg);
 
 /*
 struct List {

@@ -7,14 +7,14 @@ __inline struct Pos Loc2Pos(INT16U loc)
 {
 	struct Pos pos;
 	pos.i = (loc & 0xFF) - POS_TOP;
-	pos.j = (loc >> 8) - POS_LEFT;
+	pos.j = ((loc >> 8) - POS_LEFT) / 2;
 
 	return pos;
 }
 
 __inline INT16U Pos2Loc(Pos pos)
 {
-	return (INT16U)(((pos.j + POS_LEFT) >> 1) << 8 | (pos.i + POS_TOP));
+	return (INT16U)(((pos.j * 2)  + POS_LEFT) << 8 | (pos.i + POS_TOP));
 }
 
 __inline INT16U frontOfShelf(INT16U shelf_no, INT16U shelf_loc)
@@ -60,7 +60,7 @@ int main(void)
 	OSTaskCreate(TaskCentralControl, (void *)0, &TaskStk[0][TASK_STK_SIZE - 1], TASK_PRIO - 1);
 	OSTaskCreate(TaskGetOrder,		 (void *)0, &TaskStk[1][TASK_STK_SIZE - 1], TASK_PRIO + N_ROBOT + 1);
 	OSTaskCreate(TaskGetOrder,		 (void *)0, &TaskStk[2][TASK_STK_SIZE - 1], TASK_PRIO + N_ROBOT + 2);
-	OSTaskCreate(TaskAssigntRoute,   (void *)0, &TaskStk[3][TASK_STK_SIZE - 1], TASK_PRIO);
+//	OSTaskCreate(TaskAssigntRoute,   (void *)0, &TaskStk[3][TASK_STK_SIZE - 1], TASK_PRIO);
 
 	for (i = 1; i < N_ROBOT+1; i++) {
 //		OSTaskCreate(TaskRobotMove,  (void *)0, &TaskStk[i][TASK_STK_SIZE - 1], TASK_PRIO + i);
@@ -310,7 +310,7 @@ void TaskAssigntRoute(void* pdata)
 
 void TaskGetOrder(void* pdata) 
 {
-	INT8U i, ERR, kind, shelf, robotm, place, robot, tmp, min = -1, random;
+	INT8U i, idx, ERR, kind, shelf, robotm, place, robot, tmp, min = -1, random;
 	INT16U t_loc;
 	Pos t_pos;
 	INT32U* idle_place;
@@ -334,7 +334,16 @@ void TaskGetOrder(void* pdata)
 		OSSemPend(SemWorkSpace[kind], 0, &ERR);			// check that all places are busy
 
 		INT32U test = 0b111111111;	// ************test************
-		place = getIdleStuff(idle_place, N_PLACE, (INT8U)(rand() % N_PLACE)); // ************test************
+		// place = getIdleStuff(idle_place, N_PLACE, (INT8U)(rand() % N_PLACE)); // ************test************
+		idx = (INT8U)(rand() % N_PLACE);
+		for (i = 0; i < N_PLACE; i++, idx++) {
+			if (idx == N_PLACE) idx = 0;
+			if ((idle_ldp) & (1 << idx)) {
+				place = idx;
+				(idle_ldp) = (idle_ldp) - (1 << idx);
+			}
+		}
+		debug_print_value(7, 1, 32);
 
 //		if(kind == SHELF2WS) place = getIdleStuff(&idle_tpp, N_PLACE, (INT8U)(rand() % N_PLACE));
 //		else if(kind == WS2SHELF) place = getIdleStuff(&idle_ldp, N_PLACE, (INT8U)(rand() % N_PLACE));
@@ -343,7 +352,7 @@ void TaskGetOrder(void* pdata)
 		PC_DispStr(78, 21, "I'm in the TaskGetOrder 1", STOP_COLOR + kind - 1);	// ************test************
 
 		shelf = getIdleShelf(idle_shelf, N_SHELF, (INT8U)(rand() % N_SHELF));
-		order.color = (INT8U)(rand() % N_COLOR);
+		order.color = Colors[(INT8U)(rand() % N_COLOR)];
 
 
 		t_loc = Pos2Loc(ShelfPos_ptr[shelf]);
@@ -358,7 +367,7 @@ void TaskGetOrder(void* pdata)
 
 			place = order.arrival_loc / 8 + 1;
 			PC_DispStr(2 + 8 * place, 1, "*", order.color);		// update display
-			PC_DispStr(2 + 8 * place + 1 - 1, 1, "*", order.color);		// update display
+			PC_DispStr(2 + 8 * (place + 1) - 1, 1, "*", order.color);		// update display
 		}
 		else if (kind == WS2SHELF)										// work place to warehouse 
 		{
@@ -369,7 +378,7 @@ void TaskGetOrder(void* pdata)
 
 			place = order.start_loc / 8 + 1;
 			PC_DispStr(2 + 8 * place, 23, "*", order.color);		// update display
-			PC_DispStr(2 + 8 * place + 1 - 1, 23, "*", order.color);		// update display
+			PC_DispStr(2 + 8 * (place + 1) - 1, 23, "*", order.color);		// update display
 		}
 
 		// find out robot which is most close to start point.
@@ -398,7 +407,8 @@ void TaskGetOrder(void* pdata)
 
 		OSMboxPost(MOrder2Robot[robot], &order);	// send order to the robot task by the robot's mailbox
 
-		OSTimeDly((INT8U)(rand() % 5 + 3));
+//		OSTimeDly((INT8U)(rand() % 5 + 3));
+		OSTimeDly(10); // ************test************
 	} 
 }
 
@@ -453,13 +463,13 @@ static void TaskViewClear()
 			PC_DispStr(j * 10, i, "      ", DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);
 	}
 		
-	// clear texts
+/*	// clear texts
 	PC_DispStr(79, 4, clear, DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);	// 
 	PC_DispStr(79, 5, clear, DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);	// 
 	PC_DispStr(79, 7, clear, DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);	// 
 	PC_DispStr(79, 8, clear, DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);	//
 	PC_DispStr(79, 10, clear, DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);	// 
-		
+*/		
 	PC_DispStr(0, 11, " l                                                                        l", DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);
 	PC_DispStr(0, 12, " l                                                                        l", DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);
 	PC_DispStr(0, 13, " l                                                                        l", DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);
@@ -497,6 +507,19 @@ void TaskViewDisp()
 	//  PC_DispStr((INT8U)(obstable_loc >> 8), (INT8U)(obstable_loc & 0xFF), "бу", STOP_COLOR);
 }
 
-void debug_print_value(INT8U row, ...) {
-	va_list;
+void debug_print_value(INT8U row, INT8U n, va_list arg) 
+{
+	va_start(arg, n);
+	char msg[80] = "debug print ";
+	char value[6];
+	char* p_str = msg;
+
+	for (int i = 0; i < n; i++) {
+		va_arg(arg, INT8U);
+		sprintf(value, " %02d ,", arg);
+		p_str = strcat(p_str, value);
+	}
+
+	va_end(arg);
+	PC_DispStr(78, row, p_str, STOP_COLOR);
 }
