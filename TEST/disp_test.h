@@ -33,10 +33,16 @@ static void TaskStartDispInit();
 static void TaskViewClear();
 void TaskViewDisp();
 
+/*
 __inline Pos Loc2Pos(INT16U loc);
 __inline INT16U Pos2Loc(Pos pos);
 __inline INT16U frontOfShelf(INT16U shelf_no, INT16U shelf_loc);
 __inline INT16U originalShelf(INT16U shelf_loc);
+*/
+
+int uint2str(char* strp, int n);
+int binary2str(char* strp, INT16U n, int length);
+void debug_print(INT8U row, const char* format, ...);
 
 OS_EVENT* MOrder2Robot[N_ROBOT];			// 오더를 받아, 로봇에게 전달할 떄 사용되는 메일박스
 OS_EVENT* QRequestRoute;					// 로봇이 경로를 요청할 떄 필요
@@ -55,8 +61,47 @@ INT8U blockedPos[HEIGHT][WIDTH];
 RobotInfo robots[N_ROBOT];
 
 INT32U idle_shelf[N_SHELF / 32 + 1];
-INT32U idle_tpp;
-INT32U idle_ldp;
-INT32U idle_park;
+INT16U idle_tpp;
+INT16U idle_ldp;
+INT16U idle_park;
+
+__inline struct Pos Loc2Pos(INT16U loc)
+{
+	struct Pos pos;
+	pos.i = (loc & 0xFF) - POS_TOP;
+	pos.j = ((loc >> 8) - POS_LEFT) / 2;
+
+	return pos;
+}
+
+__inline INT16U Pos2Loc(Pos pos)
+{
+	return (INT16U)(((pos.j * 2) + POS_LEFT) << 8 | (pos.i + POS_TOP));
+}
+
+__inline INT16U frontOfShelf(INT16U shelf_no, INT16U shelf_loc)
+{
+	if (shelf_no % 2 == 0) {
+		return (shelf_loc - (2 << 8));
+	}
+	else {
+		return (shelf_loc + (2 << 8));
+	}
+}
+
+__inline INT16U originalShelf(INT16U shelf_loc)
+{
+	INT8U m = (shelf_loc >> 8) % 10;
+	if (m == 0) {
+		return shelf_loc - (2 << 8);
+	}
+	else if (m == 6) {
+		return shelf_loc + (2 << 8);
+	}
+	else {
+		return -1;
+	}
+
+}
 
 #endif // _DISP_TEST_H_

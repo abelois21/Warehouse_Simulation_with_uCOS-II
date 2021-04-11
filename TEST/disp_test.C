@@ -1,46 +1,11 @@
 #include "includes.h"
 #include "disp_test.h"
 #include "my_util.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
 #include <time.h>
 
-__inline struct Pos Loc2Pos(INT16U loc)
-{
-	struct Pos pos;
-	pos.i = (loc & 0xFF) - POS_TOP;
-	pos.j = ((loc >> 8) - POS_LEFT) / 2;
-
-	return pos;
-}
-
-__inline INT16U Pos2Loc(Pos pos)
-{
-	return (INT16U)(((pos.j * 2)  + POS_LEFT) << 8 | (pos.i + POS_TOP));
-}
-
-__inline INT16U frontOfShelf(INT16U shelf_no, INT16U shelf_loc)
-{
-	if (shelf_no % 2 == 0) {
-		return (shelf_loc - (2 << 8));
-	}
-	else {
-		return (shelf_loc + (2 << 8));
-	}
-}
-
-__inline INT16U originalShelf(INT16U shelf_loc)
-{
-	INT8U m = (shelf_loc >> 8) % 10;
-	if (m == 0) {
-		return shelf_loc - (2 << 8);
-	}
-	else if (m == 6) {
-		return shelf_loc + (2 << 8);
-	}
-	else {
-		return -1;
-	}
-
-}
 
 int main(void)
 {
@@ -313,7 +278,6 @@ void TaskGetOrder(void* pdata)
 	INT8U i, idx, ERR, kind, shelf, robotm, place, robot, tmp, min = -1, random;
 	INT16U t_loc;
 	Pos t_pos;
-	INT32U* idle_place;
 	OrderInfo order;
 
 	const Pos* ShelfPos_ptr = setShelfPos(ShelfPos);
@@ -322,8 +286,13 @@ void TaskGetOrder(void* pdata)
 	const RobotInfo* robots_ptr = robots;
 	
 	kind = OSTCBCur->OSTCBPrio % 2 + 1;
-	if (kind == SHELF2WS)     idle_place = &idle_tpp; // ************test************
-	else if(kind == WS2SHELF) idle_place = &idle_ldp; // ************test************
+	INT16U* idle_place = (kind == SHELF2WS) ? &idle_tpp : &idle_ldp;
+
+//	if (kind == SHELF2WS)     idle_place = &idle_tpp; // ************test************
+//	else if(kind == WS2SHELF) idle_place = &idle_ldp; // ************test************
+
+	debug_print(7, " %b ", idle_tpp);
+	debug_print(8, "idle_place value: %b", *idle_place);
 	
 	SemWorkSpace[kind] = OSSemCreate(N_PLACE);
 	*idle_place = 0;
@@ -343,13 +312,13 @@ void TaskGetOrder(void* pdata)
 				(idle_ldp) = (idle_ldp) - (1 << idx);
 			}
 		}
-		debug_print_value(7, 1, 32);
+
 
 //		if(kind == SHELF2WS) place = getIdleStuff(&idle_tpp, N_PLACE, (INT8U)(rand() % N_PLACE));
 //		else if(kind == WS2SHELF) place = getIdleStuff(&idle_ldp, N_PLACE, (INT8U)(rand() % N_PLACE));
 //		getIdleStuff(&test, N_PLACE, 3);
 		
-		PC_DispStr(78, 21, "I'm in the TaskGetOrder 1", STOP_COLOR + kind - 1);	// ************test************
+//		PC_DispStr(78, 21, "I'm in the TaskGetOrder 1", STOP_COLOR + kind - 1);	// ************test************
 
 		shelf = getIdleShelf(idle_shelf, N_SHELF, (INT8U)(rand() % N_SHELF));
 		order.color = Colors[(INT8U)(rand() % N_COLOR)];
@@ -507,19 +476,66 @@ void TaskViewDisp()
 	//  PC_DispStr((INT8U)(obstable_loc >> 8), (INT8U)(obstable_loc & 0xFF), "бу", STOP_COLOR);
 }
 
-void debug_print_value(INT8U row, INT8U n, va_list arg) 
+void debug_print(INT8U row, const char* format, ...) 
 {
-	va_start(arg, n);
-	char msg[80] = "debug print ";
-	char value[6];
-	char* p_str = msg;
+	char str[80];
+	char buf[17] = "0000000000000000";
+	int length, tmp, idx = 0;
 
-	for (int i = 0; i < n; i++) {
-		va_arg(arg, INT8U);
-		sprintf(value, " %02d ,", arg);
-		p_str = strcat(p_str, value);
+	va_list args;
+	va_start(args, format);
+
+	for (int i = 0; format[i]; i++) {
+		if (format[i] == '%' && format[i+1] == 'd') {
+
+			tmp = va_arg(args, int);
+
+			for (int j = uint2str(buf, tmp) - 1; j >= 0; j--) {
+				str[idx++] = buf[j];
+				buf[j] = '0';
+			}
+
+			i += 1;
+			continue;
+		}
+		else if (format[i] == '%' && format[i + 1] == 'b') {
+
+			tmp = va_arg(args, int);
+
+			for (int j = binary2str(buf, tmp, 16) - 1; j >= 0; j--) {
+				str[idx++] = buf[j];
+				buf[j] = '0';
+			}
+
+			i += 1;
+			continue;
+		}
+		str[idx++] = format[i];
+	}
+	str[idx] = '\0';
+
+	PC_DispStr(78, row, str, DISP_FGND_BLACK + DISP_BGND_WHITE);
+
+	va_end(args);
+}
+
+int uint2str(char* strp, int n)
+{
+	int length = 0;
+
+	for (int j = 0, i = 0; j < 10 && n != 0; j++, n /= 10) {
+		i = n % 10;
+		strp[length++] = i + '0';
 	}
 
-	va_end(arg);
-	PC_DispStr(78, row, p_str, STOP_COLOR);
+	return length;
+}
+
+int binary2str(char* strp, INT16U n, int length) 
+{
+	for (int i = 0; i < length; i++) {
+		strp[i] = (n >> i & 1) + '0';
+	}
+
+	return length;
 }
