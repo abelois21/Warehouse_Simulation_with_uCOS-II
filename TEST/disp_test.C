@@ -25,7 +25,7 @@ int main(void)
 	OSTaskCreate(TaskCentralControl, (void *)0, &TaskStk[0][TASK_STK_SIZE - 1], TASK_PRIO - 1);
 	OSTaskCreate(TaskGetOrder,		 (void *)0, &TaskStk[1][TASK_STK_SIZE - 1], TASK_PRIO + N_ROBOT + 1);
 	OSTaskCreate(TaskGetOrder,		 (void *)0, &TaskStk[2][TASK_STK_SIZE - 1], TASK_PRIO + N_ROBOT + 2);
-//	OSTaskCreate(TaskAssigntRoute,   (void *)0, &TaskStk[3][TASK_STK_SIZE - 1], TASK_PRIO);
+	OSTaskCreate(TaskAssigntRoute,   (void *)0, &TaskStk[3][TASK_STK_SIZE - 1], TASK_PRIO);
 
 	for (i = 1; i < N_ROBOT+1; i++) {
 //		OSTaskCreate(TaskRobotMove,  (void *)0, &TaskStk[i][TASK_STK_SIZE - 1], TASK_PRIO + i);
@@ -53,6 +53,15 @@ void TaskCentralControl(void* pdata)
 				exit(0);                                   /* return to OS                         */
 			}
 		}
+
+		// *******************************   test   *******************************
+//		RouteRequestInfo rri;
+//		rri.start_pos
+//		request = *((RouteRequestInfo*)OSQPend(QRequestRoute, 0, &ERR));	// 로봇으로 부터 경로할당 요청 수신
+
+		// *******************************   test   *******************************
+
+
 		PC_GetDateTime(msg);
 		PC_DispStr(78, 22, msg, DISP_FGND_YELLOW + DISP_BGND_BLUE);	// 
 
@@ -254,10 +263,10 @@ void TaskAssigntRoute(void* pdata)
 	const INT8U(*blocked_ptr)[WIDTH] = blockedPos;
 
 	while (1) {
-		request = *((RouteRequestInfo*)OSQPend(QRequestRoute, 0, &ERR));	// 로봇으로 부터 경로할당 요청 수신
+//!!!!!		request = *((RouteRequestInfo*)OSQPend(QRequestRoute, 0, &ERR));	// 로봇으로 부터 경로할당 요청 수신
 
 		AStarSearch(request.route, blocked_ptr, request.max_step, request.start_pos, request.arrival_pos);
-		OSSemPost(SemReceiveRoute[request.robot_no]);	// 할당 완료
+//!!!!!	OSSemPost(SemReceiveRoute[request.robot_no]);	// 할당 완료
 
 		if (request.kind == GLOBAL_ROUTE) OSTimeDly(1);
 		else if (request.kind == LOCAL_ROUTE) {			// 지역 경로 요청
@@ -276,7 +285,7 @@ void TaskAssigntRoute(void* pdata)
 void TaskGetOrder(void* pdata) 
 {
 	INT8U i, idx, ERR, kind, shelf, robotm, place, robot, tmp, min = -1, random;
-	INT16U t_loc;
+	INT16U shelf_loc;
 	Pos t_pos;
 	OrderInfo order;
 
@@ -286,55 +295,49 @@ void TaskGetOrder(void* pdata)
 	const RobotInfo* robots_ptr = robots;
 	
 	kind = OSTCBCur->OSTCBPrio % 2 + 1;
-	INT16U* idle_place = (kind == SHELF2WS) ? &idle_tpp : &idle_ldp;
-
-//	if (kind == SHELF2WS)     idle_place = &idle_tpp; // ************test************
-//	else if(kind == WS2SHELF) idle_place = &idle_ldp; // ************test************
-
-	debug_print(7, " %b ", idle_tpp);
-	debug_print(8, "idle_place value: %b", *idle_place);
+	order.kind = kind;
+	INT16U* const idle_place = (kind == SHELF2WS) ? &idle_tpp : &idle_ldp;
 	
 	SemWorkSpace[kind] = OSSemCreate(N_PLACE);
-	*idle_place = 0;
+	*idle_place = INITIAL_PLACE;
 
 	srand(time(0) + (OSTCBCur->OSTCBPrio * 237 >> 4));
 
 	while (1) {
 		OSSemPend(SemWorkSpace[kind], 0, &ERR);			// check that all places are busy
 
-		INT32U test = 0b111111111;	// ************test************
-		// place = getIdleStuff(idle_place, N_PLACE, (INT8U)(rand() % N_PLACE)); // ************test************
 		idx = (INT8U)(rand() % N_PLACE);
+
+//		debug_print(7, "idx: %d code: %b ", idx, *idle_place);	// ************test************
+
 		for (i = 0; i < N_PLACE; i++, idx++) {
 			if (idx == N_PLACE) idx = 0;
-			if ((idle_ldp) & (1 << idx)) {
+			if ((*idle_place) & (1 << idx)) {
 				place = idx;
-				(idle_ldp) = (idle_ldp) - (1 << idx);
+				(*idle_place) = (*idle_place) - (1 << idx);
+				break;
 			}
 		}
 
+//		debug_print(8, "place: %d code: %b ", place, *idle_place);	// ************test************
 
-//		if(kind == SHELF2WS) place = getIdleStuff(&idle_tpp, N_PLACE, (INT8U)(rand() % N_PLACE));
-//		else if(kind == WS2SHELF) place = getIdleStuff(&idle_ldp, N_PLACE, (INT8U)(rand() % N_PLACE));
-//		getIdleStuff(&test, N_PLACE, 3);
 		
-//		PC_DispStr(78, 21, "I'm in the TaskGetOrder 1", STOP_COLOR + kind - 1);	// ************test************
+//		debug_print(9, "shelf: %d code: %b ", shelf, idle_shelf);	// ************test************
 
 		shelf = getIdleShelf(idle_shelf, N_SHELF, (INT8U)(rand() % N_SHELF));
+		shelf_loc = Pos2Loc(ShelfPos_ptr[shelf]);
+
 		order.color = Colors[(INT8U)(rand() % N_COLOR)];
 
+//		debug_print(10, "shelf: %d code: %b ", shelf, idle_shelf);	// ************test************
 
-		t_loc = Pos2Loc(ShelfPos_ptr[shelf]);
-		PC_DispStr((INT8U)(t_loc >> 8), (INT8U)(t_loc & 0xFF), "★", order.color);	// update display
-
+/*
 		if (kind == SHELF2WS)											// warehouse to work place
 		{	
 			t_pos = TPPos_ptr[place];
-			order.start_loc   = frontOfShelf(shelf, t_loc);
+			order.start_loc   = frontOfShelf(shelf, shelf_loc);
 			order.arrival_loc = Pos2Loc(t_pos);
-			order.kind	   = SHELF2WS;
 
-			place = order.arrival_loc / 8 + 1;
 			PC_DispStr(2 + 8 * place, 1, "*", order.color);		// update display
 			PC_DispStr(2 + 8 * (place + 1) - 1, 1, "*", order.color);		// update display
 		}
@@ -342,13 +345,21 @@ void TaskGetOrder(void* pdata)
 		{
 			t_pos = LDPos_ptr[place];
 			order.start_loc   = Pos2Loc(t_pos);
-			order.arrival_loc = frontOfShelf(shelf, t_loc);
-			order.kind    = WS2SHELF;
+			order.arrival_loc = frontOfShelf(shelf, shelf_loc);
 
-			place = order.start_loc / 8 + 1;
 			PC_DispStr(2 + 8 * place, 23, "*", order.color);		// update display
 			PC_DispStr(2 + 8 * (place + 1) - 1, 23, "*", order.color);		// update display
 		}
+*/
+
+		PC_DispStr(2 + 8 * place, 1 + (kind / 2 * 22), "*", order.color);					// update display
+		PC_DispStr(2 + 8 * (place + 1) - 1, 1 + (kind / 2 * 22), "*", order.color);			// update display
+		PC_DispStr((INT8U)(shelf_loc >> 8), (INT8U)(shelf_loc & 0xFF), "★", order.color);	// update display
+
+		t_pos             = (kind == SHELF2WS) ? TPPos_ptr[place] : LDPos_ptr[place];
+		order.start_loc   = (kind == SHELF2WS) ? frontOfShelf(shelf, shelf_loc) : Pos2Loc(t_pos);
+		order.arrival_loc = (kind == SHELF2WS) ? Pos2Loc(t_pos) : frontOfShelf(shelf, shelf_loc);
+
 
 		// find out robot which is most close to start point.
 		for (i = 0; i < N_ROBOT; i++) {
@@ -360,24 +371,14 @@ void TaskGetOrder(void* pdata)
 				}
 			}
 		}
+		min = -1;	// 최댓값으로 갱신
 
-		char msg[70] = "ORDER";	// 26
-		char str[20];
-		char* p_str = msg;
-		sprintf(str, " from %02d -", place);
-		p_str = strcat(p_str, str);
-		sprintf(str, " to %02d ", shelf);
-		p_str = strcat(p_str, str);
-		sprintf(str, " robto %02d", robot);
-		p_str = strcat(p_str, str);
-		 
-		//	78, 22, msg, DISP_FGND_YELLOW + DISP_BGND_BLUE);	// 
-		PC_DispStr(78, 21, p_str, STOP_COLOR);
+		debug_print(11, "getOrder from %d to %d robot %d", place, shelf, robot);	// ************test************
+		debug_print(4, "the number of orders: %d", ++numOfOrder);	// ************test************
 
 		OSMboxPost(MOrder2Robot[robot], &order);	// send order to the robot task by the robot's mailbox
 
-//		OSTimeDly((INT8U)(rand() % 5 + 3));
-		OSTimeDly(10); // ************test************
+		OSTimeDly((INT8U)(rand() % 10 + 15));
 	} 
 }
 

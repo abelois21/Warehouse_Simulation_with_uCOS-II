@@ -11,6 +11,7 @@
 #define N_PLACE		      9
 #define TASK_STK_SIZE	512
 #define TASK_PRIO        16
+#define INITIAL_PLACE     0b0000000111111111
 
 const INT8U Colors[N_COLOR + 2] = { DISP_FGND_RED + DISP_BGND_LIGHT_GRAY,
 									DISP_FGND_BLUE + DISP_BGND_LIGHT_GRAY,
@@ -32,13 +33,6 @@ void TaskAssigntRoute(void* pdata);		// 태스크가 자원을 많이 사용함 -> 한 주기에
 static void TaskStartDispInit();						
 static void TaskViewClear();
 void TaskViewDisp();
-
-/*
-__inline Pos Loc2Pos(INT16U loc);
-__inline INT16U Pos2Loc(Pos pos);
-__inline INT16U frontOfShelf(INT16U shelf_no, INT16U shelf_loc);
-__inline INT16U originalShelf(INT16U shelf_loc);
-*/
 
 int uint2str(char* strp, int n);
 int binary2str(char* strp, INT16U n, int length);
@@ -64,6 +58,7 @@ INT32U idle_shelf[N_SHELF / 32 + 1];
 INT16U idle_tpp;
 INT16U idle_ldp;
 INT16U idle_park;
+INT16U numOfOrder;
 
 __inline struct Pos Loc2Pos(INT16U loc)
 {

@@ -6,10 +6,10 @@ Pos* setShelfPos(Pos* ShelfPos)
 
 	for (INT8U j = 0; j < 7; j++) {
 		for (INT8U i = 0; i < 7; i++) {
-			ShelfPos[c++] = ij2Pos(4 + i, 2 + j * 5);
-			ShelfPos[c++] = ij2Pos(4 + i, 3 + j * 5);
-			ShelfPos[c++] = ij2Pos(14 + i, 2 + j * 5);
-			ShelfPos[c++] = ij2Pos(14 + i, 3 + j * 5);
+			ShelfPos[c++] = ij2Pos(3 + i, 2 + j * 5);
+			ShelfPos[c++] = ij2Pos(3 + i, 3 + j * 5);
+			ShelfPos[c++] = ij2Pos(13 + i, 2 + j * 5);
+			ShelfPos[c++] = ij2Pos(13 + i, 3 + j * 5);
 		}
 	}
 

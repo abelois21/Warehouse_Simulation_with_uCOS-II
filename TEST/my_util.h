@@ -86,8 +86,6 @@ void swap(PQ* root, INT16U idx1, INT16U idx2);
 
 void AStarSearch(Pos* route, const INT8U(*isBlocked)[WIDTH], INT16U* n_route, const Pos start, const Pos arrive);
 
-void debug_print_value(INT8U row, INT8U n, va_list arg);
-
 /*
 struct List {
 	INT8U* next;
