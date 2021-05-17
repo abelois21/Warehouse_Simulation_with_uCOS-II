@@ -1,5 +1,5 @@
 #include "includes.h"
-// #define DEBUG_MODE
+#define DEBUG_MODE
 /*
 *********************************************************************************************************
 *                                               CONSTANTS
@@ -7,15 +7,13 @@
 */
 
 #define   TASK_STK_SIZE		512
-#define       TASK_PRIO		16
+#define  ROBOT_STK_SIZE		1024
+#define       TASK_PRIO		20
 #define		   SHELF2WS     1							// WareHouse to WorkSpace
 #define		   WS2SHELF	    2							// WorkSpace to WareHouse
 #define		  TRANSPORT     1							// WareHouse to WorkSpace
 #define		      STORE	    2							// WorkSpace to WareHouse
-#define    GLOBAL_ROUTE	    1
-#define     LOCAL_ROUTE		2
 #define   INITIAL_PLACE     0x01FF
-#define        GETSHELF		0xFF
 
 #define			N_ROBOT	    16
 #define         N_ROUTE     70
@@ -49,51 +47,35 @@ const int dj[4] = { 0, 1, 0, -1 };
 
 /*
 *********************************************************************************************************
-*                                               VARIABLES
+*                                             DATA TYPES
 *********************************************************************************************************
 */
 
-FILE* fp;
-char logBuf[256];
-
-OS_EVENT* MQOrder2Robot;					// 오더를 주면, 로봇이 선점해감
-void* QOrderTbl[N_ROBOT + 1];
-
-OS_EVENT* QRequestRoute;					// 로봇이 경로를 요청할 떄 필요
-void* QBuff[N_ROBOT + 1];
-
-OS_EVENT* SemReceiveRoute[N_ROBOT];			// 로봇이 경로를 요청하고, 받을 떄까지 대기하게 함
-OS_EVENT* MutexRobotSync;					// 로봇의 위치정보를 가져오거나, 수정할 때 동기화를 위함
-OS_EVENT* SemWorkSpace[2];
-
-OS_STK TaskStk[4][TASK_STK_SIZE];
-OS_STK TaskStk2[N_ROBOT][TASK_STK_SIZE];
-
-typedef enum STATUS {
+typedef enum {
 	IDLE,
 	RUNNING,
 	STOPED
 }STATUS;
 
-typedef struct Pos {
+typedef struct {
 	INT8U i;
 	INT8U j;
 } Pos;
 
-typedef struct ORDER_INFO {
+typedef struct {
 	INT8U kind;
 	INT8U workspace;
 	INT8U shelf;
 	INT8U color;
 } ORDER_INFO;
 
-typedef struct ROBOT_INFO {
+typedef struct {
 	Pos pos;
 	STATUS stat;
 	INT8U color;
 }ROBOT_INFO;
 
-typedef struct REQUEST_INFO {
+typedef struct {
 	Pos departure;
 	Pos arrival;
 	Pos* route;
@@ -101,37 +83,51 @@ typedef struct REQUEST_INFO {
 	INT8U robot_no;
 } REQUEST_INFO;
 
-typedef struct PRIORITY_QUEUE {
+typedef struct {
 	INT16U* val;
 	Pos* loc;
 	INT16U  size;
 } PRIORITY_QUEUE;
 
-typedef struct LIST {
-	LIST* next;
+typedef struct LIST{
+	struct LIST* next;
 	INT8U n;
 } LIST;
 
+/*
+*********************************************************************************************************
+*                                               VARIABLES
+*********************************************************************************************************
+*/
+
+FILE* fp;
+// char logBuf[256];
+
+OS_EVENT* QOrder2Robot;					// 오더를 주면, 로봇이 선점해감
+void* QOrderTbl[N_ROBOT + 1];
+
+OS_EVENT* MRequestRoute;					// 로봇이 경로를 요청할 떄 필요
+
+// void* QBuff[N_ROBOT + 1];
+
+OS_EVENT* SemRobot[N_ROBOT];			// 로봇이 경로를 요청하고, 받을 떄까지 대기하게 함
+OS_EVENT* MutexRobotSync;					// 로봇의 위치정보를 가져오거나, 수정할 때 동기화를 위함
+OS_EVENT* SemWorkSpace[2];
+
+OS_STK TaskStk[4][TASK_STK_SIZE];
+// OS_STK TaskStk2[N_ROBOT][TASK_STK_SIZE*2];
+OS_STK TaskRobotStk[N_ROBOT][ROBOT_STK_SIZE];
+
 OS_MEM* ListBuf;
 INT8U ListPart[N_ROBOT + 1][sizeof(LIST)];
-
-/*
-typedef struct RouteRequestInfo {
-	Pos start_pos;
-	Pos arrival_pos;
-	Pos* route;
-	INT16U* max_step;
-	INT8U kind;
-	INT8U robot_no;
-}RouteRequestInfo;
-*/
 
 Pos SHP[N_SHELVES];							// Shelves Point
 Pos TPP[N_PLACE];							// Transport Point
 Pos LDP[N_PLACE];							// Load Point
 Pos PKP[N_ROBOT];							// Park Point
-Pos BLP[N_FIXED_BLOCK+N_ROBOT];						// Blocked Point
-INT8U isBlockedPOS[POS_HEIGHT][POS_WIDTH];
+Pos BLP[N_FIXED_BLOCK+N_ROBOT+5];			// Blocked Point
+// INT8U isBlockedPOS[POS_HEIGHT][POS_WIDTH];
+Pos robotObstacle[N_ROBOT];
 
 const Pos* shelves_ptr = SHP;
   const Pos* trans_ptr = TPP;
@@ -142,17 +138,9 @@ const Pos* blocked_ptr = BLP;
 ROBOT_INFO robots[N_ROBOT];
 
 LIST busyShelves;
-// INT8U busyShelf[N_ROBOT];
-// INT8U n_busy;
 
 INT16U idle_tpp;
 INT16U idle_ldp;
-
-/*
-INT32U idle_shelf[N_SHELVES / 32 + 1];
-INT16U idle_park;
-INT16U numOfOrder;
-*/
 
 // priority queue related
 PRIORITY_QUEUE pq;
@@ -173,10 +161,12 @@ void TaskAssigntRoute(void* pdata);		// 태스크가 자원을 많이 사용함 -> 한 주기에
 // display related
 static void TaskStartDispInit();
 static void TaskViewClear();
-void TaskViewDisp();
+void TaskRobotsDisp();
 
-void workSpaceDisp(INT8U place, INT8U type, INT8U n);
-void shelfDisp(INT8U shelf, INT8U n);
+void markWorkSpace(INT8U place, INT8U kind, INT8U color);
+void clearWorkSpace(INT8U place, INT8U kind);
+void markShelf(INT8U shelf, INT8U color);
+void clearShelf(INT8U shelf);
 
 // initialize
 void initialize_map();
@@ -200,15 +190,15 @@ INT16U AStarSearch(Pos* route, const Pos start, const Pos end, const Pos* blocke
 // other utils
 __inline Pos Loc2Pos(INT16U loc);
 __inline INT16U Pos2Loc(Pos pos);
-__inline Pos frontOfShelf(Pos shelf)
-__inline INT16U distance(Pos p1, Pos p2)
-__inline INT8U isSamePos(const Pos p1, const Pos p2)
+__inline Pos frontOfShelf(Pos shelf);
+__inline INT16U distance(Pos p1, Pos p2);
+__inline INT8U isSamePos(const Pos p1, const Pos p2);
 
 // get idle workspace, shelf
-INT8U getIdleTurn(INT16U* code, INT8U size)
-void returnTurn(INT16U* code, INT8U turn)
-INT8U getIdleShelfNum()
-void returnShelfNum(INT8U n)
+INT8U getIdleTurn(INT16U* code, INT8U size);
+void returnTurn(INT16U* code, INT8U turn);
+INT8U getIdleShelfNum();
+void returnShelfNum(INT8U n);
 
 void updatedBlockedMap();
 
@@ -224,27 +214,27 @@ int main(void)
 
 	if ((fp = fopen("log.txt", "w")) == NULL) exit(2);
 
-	srand(time(0) + (OSTCBCur->OSTCBPrio * 237 >> 4));
+	srand(time((void *)0));
 	initialize_map();
 
 	OSInit();
 	
 	// initialize task
-	OSTaskCreate(TaskCentralControl, (void *)0, &TaskStk[0][TASK_STK_SIZE - 1], TASK_PRIO - 1);
+	OSTaskCreate(TaskCentralControl, (void *)0, &TaskStk[0][TASK_STK_SIZE - 1], (INT8U)(TASK_PRIO / 3));
 	OSTaskCreate(TaskGetOrder,		 (void *)0, &TaskStk[1][TASK_STK_SIZE - 1], TASK_PRIO + N_ROBOT + 1);
 	OSTaskCreate(TaskGetOrder,		 (void *)0, &TaskStk[2][TASK_STK_SIZE - 1], TASK_PRIO + N_ROBOT + 2);
-	OSTaskCreate(TaskAssigntRoute,   (void *)0, &TaskStk[3][TASK_STK_SIZE - 1], TASK_PRIO);
+	OSTaskCreate(TaskAssigntRoute,   (void *)0, &TaskStk[3][TASK_STK_SIZE - 1], (INT8U)(TASK_PRIO / 2));
 
-//	for (i = 1; i < N_ROBOT+1; i++) {
-//		OSTaskCreate(TaskRobotMove,  (void *)0, &TaskStk[i][TASK_STK_SIZE - 1], TASK_PRIO + i);
-//	}
-	OSTaskCreate(TaskRobotMove, (void *)0, &TaskStk2[0][TASK_STK_SIZE - 1], TASK_PRIO + 1);
+	for (i = 1; i < N_ROBOT+1; i++) {
+//		OSTaskCreate(TaskRobotMove, (void *)0, &TaskRobotStk[i][ROBOT_STK_SIZE - 1], TASK_PRIO + i);
+	}
+	OSTaskCreate(TaskRobotMove, (void *)0, &TaskRobotStk[0][ROBOT_STK_SIZE - 1], TASK_PRIO);
 
-	QRequestRoute = OSQCreate(QBuff, N_ROBOT + 1);
-	MQOrder2Robot = OSQCreate(QOrderTbl, N_ROBOT + 1);
-	MutexRobotSync = OSSemCreate(1);
+	QOrder2Robot = OSQCreate(QOrderTbl, N_ROBOT + 1);				//
+	MutexRobotSync = OSSemCreate(1);								// protect robot's location
 
 	ListBuf = OSMemCreate(ListPart, N_ROBOT + 1, sizeof(LIST), &ERR);
+	memset(robotObstacle, 0, sizeof(Pos)*N_ROBOT);
 
 	OSStart();
 
@@ -260,9 +250,19 @@ int main(void)
 void TaskCentralControl(void* pdata)
 {
 	INT8U msg[40];
+	INT8U i;
 	INT16S key;
 
 	TaskStartDispInit();
+
+	for (i = 0; i < N_ROBOT; i++) {
+		robots[i].pos.i = 2;
+		robots[i].pos.j = 9;
+	}
+
+#ifdef DEBUG_MODE
+	fprintf(fp, "\nTaskCentralControl() Start\n");
+#endif
 
 	for (;;) {
 		if (PC_GetKey(&key)) {                             /* if key has been pressed              */
@@ -275,7 +275,7 @@ void TaskCentralControl(void* pdata)
 		PC_GetDateTime(msg);
 		PC_DispStr(78, 22, msg, DISP_FGND_YELLOW + DISP_BGND_BLUE);	// 
 
-		TaskViewDisp();
+		TaskRobotsDisp();
 
 		OSTimeDly(1);
 	}
@@ -291,7 +291,7 @@ void TaskRobotMove(void* pdata)
 	const INT8U robot_no = OSTCBCur->OSTCBPrio % N_ROBOT;
 	const INT8U d_value = 5;
 	INT8U i, j, t_color, ERR, isBlocked = 0, stage = 0;
-	INT8U stage = 0, step = 0, t_step, steps, t_steps;;
+	INT8U step = 0, t_step, steps, t_steps;;
 	INT16U* idle_place;
 
 	ORDER_INFO order;
@@ -302,17 +302,17 @@ void TaskRobotMove(void* pdata)
 	Pos g_route[N_ROUTE], l_route[N_ROUTE];
 
 	ROBOT_INFO* robot = &robots[robot_no];
-	robot->pos = park_ptr[robot_no];	// 로봇의 초기 위치 설정
+	robot->pos = park_ptr[robot_no];										// 로봇의 초기 위치 설정
 	robot->stat = IDLE;
 
-	SemReceiveRoute[robot_no] = OSSemCreate(1);
+	SemRobot[robot_no] = OSSemCreate(0);
 
 	while (1) {
 #ifdef DEBUG_MODE
-		fprintf(fp, "\n%d TaskRobotMove()\n", robot_no);
+		fprintf(fp, "\n%d TaskRobotMove() Routine Start\n", robot_no);
 #endif
 
-		order = *((OrderInfo *)OSQPend(MQOrder2Robot, 0, &ERR));			// waiting for order
+		order = *((ORDER_INFO *)OSQPend(QOrder2Robot, 0, &ERR));			// waiting for order
 		robot->stat = RUNNING;
 		robot->color = order.color;
 
@@ -324,14 +324,14 @@ void TaskRobotMove(void* pdata)
 		g_dest[0] = robot->pos;
 		g_dest[3] = robot->pos;
 		if (order.kind == TRANSPORT) {
-			g_dest[1] = frontOfShelf(order.shelf);
-			g_dest[2] = order.workspace;
+			g_dest[1] = frontOfShelf(shelves_ptr[order.shelf]);
+			g_dest[2] = trans_ptr[order.workspace];
 			idle_place = &idle_tpp;
 		}
 		else if (order.kind == STORE) {
-			g_dest[1] = order.workspace;
-			g_dest[2] = frontOfShelf(order.shelf);
-			idle_place = &idle_ldp
+			g_dest[1] = load_ptr[order.workspace];
+			g_dest[2] = frontOfShelf(shelves_ptr[order.shelf]);
+			idle_place = &idle_ldp;
 		} 
 
 		for (stage = 0; stage < 3; stage++) {
@@ -343,14 +343,25 @@ void TaskRobotMove(void* pdata)
 
 #ifdef DEBUG_MODE
 			fprintf(fp, "\n%d TaskRobotMove() 전역경로 요청\n", robot_no);
-			fprintf(fp, "%d TaskRobotMove() from (%d, %d) to (%d, %d)\n", request.departure.i, 
+			fprintf(fp, "%d TaskRobotMove() from (%d, %d) to (%d, %d)\n", robot_no, request.departure.i,
 				request.departure.j, request.arrival.i, request.arrival.j);
 #endif
 			
-			OSQPost(QRequestRoute, &request);								// request route to TaskAssignRoute
-			OSSemPend(SemReceiveRoute[robot_no], 0, &ERR);					// receive robot's route	
-
+			ERR = OSMboxPost(MRequestRoute, &request);						// request route to TaskAssignRoute
 #ifdef DEBUG_MODE
+			if (ERR != OS_NO_ERR) {
+				fprintf(fp, "%d TaskRobotMove() OSMboxPost() Error 발생\n", robot_no);
+				exit(1);
+			}
+			fprintf(fp, "%d TaskRobotMove() 경로 요청완료\n", robot_no);
+#endif
+
+			OSSemPend(SemRobot[robot_no], 0, &ERR);							// receive robot's route	
+#ifdef DEBUG_MODE
+			if (ERR != OS_NO_ERR) {
+				fprintf(fp, "%d TaskRobotMove() OSSemPend() Error 발생\n", robot_no);
+				exit(1);
+			}
 			fprintf(fp, "%d TaskRobotMove() 전역경로 할당 완료 steps: %d\n", robot_no, steps);
 #endif
 
@@ -360,17 +371,29 @@ void TaskRobotMove(void* pdata)
 				// 전방에 다른 로봇이 있는지 탐색
 				// ****************** 뮤텍스 로봇 위치정보 보호 ******************
 				OSMutexPend(MutexRobotSync, 0, &ERR);
+#ifdef DEBUG_MODE
+				if (ERR != OS_NO_ERR) {
+					fprintf(fp, "\n%d TaskRobotMove OSMutexPend() Error 발생\n", robot_no);
+				}
+#endif
 				for (i = 0, isBlocked = 0; i < N_ROBOT; i++) {
 					if (i == robot_no) continue;
-					if (isSamePos(robot->pos, robots[i].pos)) {
+					if (isSamePos(route[step], robots[i].pos)) {
 						isBlocked = 1;
+						robotObstacle[robot_no] = robots[i].pos;
 						break;
 					}
 				}
-				OSMutexPost(MutexRobotSync);
+				ERR = OSMutexPost(MutexRobotSync);
+#ifdef DEBUG_MODE
+				if (ERR != OS_NO_ERR) {
+					fprintf(fp, "\n%d TaskRobotMove OSMutexPost() Error 발생\n", robot_no);
+			}
+#endif
 				// ****************** 뮤텍스 로봇 위치정보 보호 ******************
 
-				// 로봇이 경로를 따라 진행 중 가로막혔을 때
+				// 로봇이 경로를 따라 진행 중
+				// 가로막혔을 때
 				if (isBlocked) {	
 #ifdef DEBUG_MODE
 					fprintf(fp, "\n%d TaskRobotMove() 전역 경로 진행 중 장애물 식별\n", robot_no);
@@ -395,15 +418,26 @@ void TaskRobotMove(void* pdata)
 
 #ifdef DEBUG_MODE
 					fprintf(fp, "\n%d TaskRobotMove() 지역경로 요청\n", robot_no);
-					fprintf(fp, "%d TaskRobotMove() from (%d, %d) to (%d, %d)\n", request.departure.i,
+					fprintf(fp, "%d TaskRobotMove() from (%d, %d) to (%d, %d)\n", robot_no, request.departure.i,
 						request.departure.j, request.arrival.i, request.arrival.j);
 #endif
 					// 경로 요청 완료. -> 메일박스로 받음
-					OSQPost(QRequestRoute, &request);							// 목적지까지의 경로 요청
-					OSSemPend(SemReceiveRoute[robot_no], 0, &ERR);				// 경로 받음
-
+					OSMboxPost(MRequestRoute, &request);				// 목적지까지의 경로 요청
 #ifdef DEBUG_MODE
-					fprintf(fp, "%d TaskRobotMove() 지역경로 할당 완료 steps: %d\n", robot_no, steps);
+					if (ERR != OS_NO_ERR) {
+						fprintf(fp, "%d TaskRobotMove() OSMboxPost() Error 발생\n", robot_no);
+						exit(1);
+					}
+					fprintf(fp, "%d TaskRobotMove() 경로 요청완료\n", robot_no);
+#endif
+
+					OSSemPend(SemRobot[robot_no], 0, &ERR);				// 경로 받음
+#ifdef DEBUG_MODE
+					if (ERR != OS_NO_ERR) {
+						fprintf(fp, "%d TaskRobotMove() OSSemPend() Error 발생\n", robot_no);
+						exit(1);
+				}
+					fprintf(fp, "%d TaskRobotMove() 전역경로 할당 완료 steps: %d\n", robot_no, steps);
 #endif
 
 					robot->stat = RUNNING;
@@ -417,11 +451,21 @@ void TaskRobotMove(void* pdata)
 				// 로봇 경로를 따라 한 칸 이동
 				// ****************** 뮤텍스 로봇 위치정보 보호 ******************
 				OSMutexPend(MutexRobotSync, 0, &ERR);
+#ifdef DEBUG_MODE
+				if (ERR != OS_NO_ERR) {
+					fprintf(fp, "\n%d TaskRobotMove OSMutexPend() Error 발생\n", robot_no);
+				}
+#endif
 
 				robot->pos.i = (route + step)->i;
 				robot->pos.j = (route + step)->j;
 
-				OSMutexPost(MutexRobotSync);
+				ERR = OSMutexPost(MutexRobotSync);
+#ifdef DEBUG_MODE
+				if (ERR != OS_NO_ERR) {
+					fprintf(fp, "\n%d TaskRobotMove OSMutexPost() Error 발생\n", robot_no);
+				}
+#endif
 				// ****************** 뮤텍스 로봇 위치정보 보호 ******************
 				step += 1;
 #ifdef DEBUG_MODE
@@ -460,13 +504,13 @@ void TaskRobotMove(void* pdata)
 
 		returnTurn(idle_place, order.workspace);
 		returnShelfNum(order.shelf);
-		workSpaceDisp(order.workspace, order.kind, 2);						// recover workspace display
-		shelfDisp(order.shelf, IDLE_COLOR);									// recover color shelf
+		clearWorkSpace(order.workspace, order.kind);						// clear workspace display
+		clearShelf(order.shelf);											// clear color shelf
 
-		OSSemPost(SemWorkSpace[kind]);										// idle workplace num added 1
+		OSSemPost(SemWorkSpace[order.kind]);								// idle workplace num added 1
 
 #ifdef DEBUG_MODE
-		fprintf(fp, "%d TaskRobotMove() SemWorkSpace[%d] 반환\n", robot_no, kind);
+		fprintf(fp, "%d TaskRobotMove() SemWorkSpace[%d] 반환\n", robot_no, order.kind);
 #endif
 		
 		OSTimeDly(1);
@@ -483,26 +527,42 @@ void TaskAssigntRoute(void* pdata)
 	INT8U ERR;
 	REQUEST_INFO request;
 
+//	MRequestRoute = OSQCreate(QBuff, N_ROBOT + 1);
+	MRequestRoute = OSMboxCreate((void *)0);
+
 	while (1) {
 #ifdef DEBUG_MODE
-		fprintf(fp, "TaskAssigntRoute() \n");
+		fprintf(fp, "\nTaskAssigntRoute() Routine Start \n");
 #endif
 
-		request = *((REQUEST_INFO *)OSQPend(QRequestRoute, 0, &ERR));
-
+		//		request = *((REQUEST_INFO *)OSQPend(QRequestRoute, 0, &ERR));
+		request = *((REQUEST_INFO *)OSMboxPend(MRequestRoute, 0, &ERR));
 #ifdef DEBUG_MODE
+		if (ERR != OS_NO_ERR) {
+			fprintf(fp, "TaskAssigntRoute() OSMboxPend Error 발생\n");
+		}
 		fprintf(fp, "TaskAssigntRoute() 경로요청 수신\n");
 #endif
 
-		updatedBlockedMap();									// update blocked pos
-		// search route
-		request->steps = AStarSearch(request->route, request->departure, request->arrival,
-			blocked_ptr, N_FIXED_BLOCK + N_ROBOT);
-		
-		OSSemPost(SemReceiveRoute[request.robot_no]);			// complete assign route
+		// ****************** 수정해야함 ****************** 
+		// 현재 매커니즘은 막고있는 바로 다음 단계만 
+// 		updatedBlockedMap();									// update blocked pos
+		BLP[N_FIXED_BLOCK] = robotObstacle[request.robot_no];	// 바로 경로상의 하나 장애물 추가
+		// ****************** 수정해야함 ******************
 
+		// search route
+		*(request.steps) = AStarSearch(request.route, request.departure, request.arrival,
+			blocked_ptr, N_FIXED_BLOCK + N_ROBOT);
+
+		robotObstacle[request.robot_no].i = 0;
+		robotObstacle[request.robot_no].j = 0;
+		
+		ERR = OSSemPost(SemRobot[request.robot_no]);			// complete assign route
 #ifdef DEBUG_MODE
-		fprintf(fp, "TaskAssigntRoute() 로봇 %d 경로할당 완료\n", robot_no);
+		if (ERR != OS_NO_ERR) {
+			fprintf(fp, "TaskAssigntRoute() OSSemPost[%d] Error 발생\n", request.robot_no);
+		}
+		fprintf(fp, "TaskAssigntRoute() 로봇 %d 경로할당 완료\n", request.robot_no);
 #endif
 
 		OSTimeDly(1);
@@ -527,14 +587,25 @@ void TaskGetOrder(void* pdata)
 		idle_place = &idle_tpp;
 	}
 	else if (kind == STORE) {
-		idle_place = &idle_ldp
+		idle_place = &idle_ldp;
 	}
 	*idle_place = INITIAL_PLACE;
 	
 	SemWorkSpace[kind] = OSSemCreate(N_PLACE);				// 뮤텍스로 바꿔
 
 	while (1) {
+#ifdef DEBUG_MODE
+		fprintf(fp, "\n%d TaskGetOrder Routine Start\n", kind);
+#endif
+
 		OSSemPend(SemWorkSpace[kind], 0, &ERR);			// check that all places are busy
+#ifdef DEBUG_MODE
+		if (ERR = OS_NO_ERR){
+			fprintf(fp, "%d TaskGetOrder OSSemPend() Error 발생\n", kind);
+			exit(1);
+		}
+		fprintf(fp, "%d TaskGetOrder OSSemPend() 완료\n", kind);
+#endif
 		place = getIdleTurn(idle_place, N_PLACE);
 		shelf = getIdleShelfNum();
 
@@ -542,16 +613,24 @@ void TaskGetOrder(void* pdata)
 		order.shelf     = shelf;
 		order.color     = Colors[(INT8U)(rand() % N_COLOR)];
 
-		workSpaceDisp(place, kind, 1);								// display '*' workspace
-		shelfDisp(shelf, color);									// display color shelf
+		markShelf(shelf, order.color);								// display color shelf
+		markWorkSpace(place, kind, order.color);					// display '*' workspace
 
 #ifdef DEBUG_MODE
-		fprintf(fp, "TaskGetOrder kind %d workspace %d shelf %d\n", kind, place, shelf);
+		fprintf(fp, "%d TaskGetOrder - workspace %d shelf %d\n", kind, place, shelf);
 		fprintf(fp, "idle_place: %b", *idle_place);
 #endif
 
 //		OSMboxPost(MOrder2Robot[robot], &order);	// send order to the robot task by the robot's mailbox
-		OSQPost(MQOrder2Robot, &order);
+		ERR = OSQPost(QOrder2Robot, &order);
+#ifdef DEBUG_MODE
+		if (ERR != OS_NO_ERR) {
+			fprintf(fp, "%d TaskGetOrder OSQPost() Error 발생\n", kind);
+		}
+		fprintf(fp, "%d TaskGetOrder OSQPost() 완료\n", kind);
+		fprintf(fp, "%d TaskGetOrder - workspace %d shelf %d\n", kind, place, shelf);
+		fprintf(fp, "idle_place: %b", *idle_place);
+#endif
 		OSTimeDly((INT8U)(rand() % 10 + 15));
 	} 
 }
@@ -642,42 +721,45 @@ static void TaskViewClear()
 	PC_DispStr(79, 7, clear, DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);	//
 	PC_DispStr(79, 8, clear, DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);	//
 	PC_DispStr(79, 10, clear, DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);	//
-*/
+	*/
 }
 
-// n == 1 작업장 표시하기
-// n == 2 작업장 원래대로 돌리기
-void workSpaceDisp(INT8U place, INT8U type, INT8U n) 
+void markWorkSpace(INT8U place, INT8U kind, INT8U color)
 {
-	if (n == 1) {
-		if (type == TRANSPORT) {
-			PC_DispStr(2 + 8 * place, 1, "*", order.color);					// update display
-			PC_DispStr(2 + 8 * (place + 1) - 1, 1, "*", order.color);		// update display
-		}
-		else if (type == STORE) {
-			PC_DispStr(2 + 8 * place, 23, "*", order.color);				// update display
-			PC_DispStr(2 + 8 * (place + 1) - 1, 23, "*", order.color);		// update display
-		}
+	if (kind == TRANSPORT) {
+		PC_DispStr(2 + 8 * place, 1, "*", color);					// update display
+		PC_DispStr(2 + 8 * (place + 1) - 1, 1, "*", color);			// update display
 	}
-	else if (n == 2) {
-		if (type == TRANSPORT) {
-			PC_DispStr(2 + 8 * place, 1, "l", DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);					// update display
-			PC_DispStr(2 + 8 * (place + 1) - 1, 1, "l", DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);		// update display
-		}
-		else if (type == STORE) {
-			PC_DispStr(2 + 8 * place, 23, "l", DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);				// update display
-			PC_DispStr(2 + 8 * (place + 1) - 1, 23, "l", DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);		// update display
-		}
+	else if (kind == STORE) {
+		PC_DispStr(2 + 8 * place, 23, "*", color);					// update display
+		PC_DispStr(2 + 8 * (place + 1) - 1, 23, "*", color);		// update display
 	}
 }
 
-// 작업선반 color로 표시하기
-// color == DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY 작업선반 원래대로 돌리기
-void shelfDisp(INT8U shelf, INT8U color)
+void clearWorkSpace(INT8U place, INT8U kind)
+{
+	if (kind == TRANSPORT) {
+		PC_DispStr(2 + 8 * place, 1, "l", DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);					// update display
+		PC_DispStr(2 + 8 * (place + 1) - 1, 1, "l", DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);		// update display
+	}
+	else if (kind == STORE) {
+		PC_DispStr(2 + 8 * place, 23, "l", DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);					// update display
+		PC_DispStr(2 + 8 * (place + 1) - 1, 23, "l", DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);		// update display
+	}
+}
+
+void markShelf(INT8U shelf, INT8U color)
 {
 	INT16U loc = Pos2Loc(shelves_ptr[shelf]);
 
-	PC_DispStr((loc >> 8), (loc & 0xFF), "■", color);
+	PC_DispStr((loc >> 8), (loc & 0xFF), "★", color);
+}
+
+void clearShelf(INT8U shelf)
+{
+	INT16U loc = Pos2Loc(shelves_ptr[shelf]);
+
+	PC_DispStr((loc >> 8), (loc & 0xFF), "■", DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);
 }
 
 /*
@@ -776,7 +858,7 @@ INT16U AStarSearch(Pos* route, const Pos start, const Pos end, const Pos* blocke
 	if (ppq != (void*)0) {
 		ppq = &pq;
 		ppq->val = pq_val_buf;
-		ppq->val = pq_loc_buf;
+		ppq->loc = pq_loc_buf;
 		ppq->size = 0;
 	}
 	
@@ -874,9 +956,9 @@ INT16U AStarSearch(Pos* route, const Pos start, const Pos end, const Pos* blocke
 *                                          Other Util Function
 *********************************************************************************************************
 */
-__inline struct Pos Loc2Pos(INT16U loc)
+__inline Pos Loc2Pos(INT16U loc)
 {
-	struct Pos pos;
+	Pos pos;
 	pos.i = (loc & 0xFF) - POS_TOP;
 	pos.j = ((loc >> 8) - POS_LEFT) / 2;
 
@@ -915,29 +997,30 @@ INT8U getIdleTurn(INT16U* code, INT8U size)
 {
 	INT8U n = (INT8U)(rand() % size);
 
-	while (*code & (1 << n)) {
+	while (!(*code & (1 << n))) {
 		n = (n + 1) % size;
 	}
-	*code = *code - (1 << n);
+	*code &= ~(1 << n);
 
 	return n;
 }
 
 void returnTurn(INT16U* code, INT8U turn) 
 {
-	*code = *code | (1 << turn);
+	*code |= (1 << turn);
 }
 
 INT8U getIdleShelfNum() 
 {
 	INT8U n = rand() % N_SHELVES, ERR;
-	LIST* head = &busyShelves;
+	LIST* head = busyShelves.next;
 	LIST* temp = OSMemGet(ListBuf, &ERR);
 	
-	while (!head) {
+	while (head != (void *)0) {
 		if (n == head->n) {
 			n = rand() % N_SHELVES;
-			head = &busyShelves;
+			head = busyShelves.next;
+			continue;
 		}
 		head = head->next;
 	}
@@ -952,10 +1035,10 @@ INT8U getIdleShelfNum()
 
 void returnShelfNum(INT8U n) 
 {
-	LIST* head = &busyShelves;
-	LIST* previous = head;
+	LIST* head = busyShelves.next;
+	LIST* previous = &busyShelves;
 	
-	while (!head) {
+	while (head != (void *)0) {
 		if (n == head->n) {
 			previous->next = head->next;
 			OSMemPut(ListBuf, head);
@@ -966,12 +1049,28 @@ void returnShelfNum(INT8U n)
 	}
 }
 
+/*
+void updateObstacle(LIST* head)
+{
+	INT8U added = 0;
+
+	while (!head) {
+		BLP[N_FIXED_BLOCK + added++] = head->next;
+		head = head->next;
+	}
+	BLP[N_FIXED_BLOCK+added]
+}
+
+void clearObstacle()
+{
+}
+
 void updatedBlockedMap() 
 {
 	for (INT8U n = 0; n < N_ROBOT; n++) 
 		blocked_ptr[N_FIXED_BLOCK + n] = robots[n].pos;
 }
-
+*/
 
 /*
 *********************************************************************************************************
@@ -1061,8 +1160,6 @@ int binary2str(char* strp, INT16U n, int length)
 // set up map (SHP, TPP, LDP, PKP, BLP, isBlocked)
 void initialize_map()
 {
-	memset(isBlockedPos, 0, sizeof(INT8U)*POS_HEIGHT*POS_WIDTH);
-
 	INT8U n = 0, m = 0;
 	Pos p[4], temp;
 
@@ -1071,8 +1168,7 @@ void initialize_map()
 	p[2].i = 22; p[2].j = 0; p[3].i = 22; p[3].j = 3;
 	for (INT8U i = 0; i < 9; i++) {
 		for (INT8U j = 0; j < 4; j++) {
-//			BLP[n++] = p[j];
-			isBlockedPos[p[j].i][p[j].j] = 1;
+			BLP[n++] = p[j];
 
 			temp = p[j];
 			if (j == 1 && i != 8) {
@@ -1096,7 +1192,7 @@ void initialize_map()
 		for (INT8U j = 0; j < 7; j++) {
 			for (INT8U k = 0; k < 4; k++) {
 				SHP[n++] = p[k];
-				isBlockedPos[p[k].i][p[k].j] = 1;
+				BLP[n++] = p[k];
 
 				temp = p[k];
 				if (k % 2 == 0) {
@@ -1124,6 +1220,7 @@ void initialize_map()
 	}
 
 #ifdef DEBUG_MODE
+/*
 	// ***** test code *****
 	fprintf(fp, "\n\n");
 	for (int i = 0; i < POS_HEIGHT; i++) {
@@ -1135,8 +1232,6 @@ void initialize_map()
 	}
 	fprintf(fp, "\n\n");
 
-	INT8U copy[POS_HEIGHT][POS_WIDTH];
-	memcpy(copy, isBlockedPos, sizeof(INT8U)*POS_HEIGHT*POS_WIDTH);
 
 	for (int i = 0; i < N_PLACE; i++) {
 		temp = LDP[i];
@@ -1181,9 +1276,7 @@ void initialize_map()
 		fprintf(fp, "\n");
 	}
 	fprintf(fp, "\n\n");
-
-	memcpy(isBlockedPos, copy, sizeof(INT8U)*POS_HEIGHT*POS_WIDTH);
-
+*/
 	// exit(1);
 #endif
 }
