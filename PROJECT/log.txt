@@ -3,7 +3,42 @@ TaskCentralControl() Start
 
 TaskAssigntRoute() Routine Start 
 
+5 TaskRobotMove() Routine Start
+
+6 TaskRobotMove() Routine Start
+
+7 TaskRobotMove() Routine Start
+
+8 TaskRobotMove() Routine Start
+
+9 TaskRobotMove() Routine Start
+
+10 TaskRobotMove() Routine Start
+
+11 TaskRobotMove() Routine Start
+
+12 TaskRobotMove() Routine Start
+
+13 TaskRobotMove() Routine Start
+
+14 TaskRobotMove() Routine Start
+
+15 TaskRobotMove() Routine Start
+
+0 TaskRobotMove() Routine Start
+
+1 TaskRobotMove() Routine Start
+
+2 TaskRobotMove() Routine Start
+
+3 TaskRobotMove() Routine Start
+
 4 TaskRobotMove() Routine Start
 
 2 TaskGetOrder Routine Start
 2 TaskGetOrder OSSemPend() 완료
+2 TaskGetOrder - workspace 0 shelf 80
+idle_place: 1FE
+5 TaskRobotMove() OSQPend를 통해 오더 전달받음
+5 TaskRobotMove() global route request from (1, 15) to (22, 1)
+TaskAssigntRoute() 경로요청 수신

@@ -38,8 +38,8 @@ const INT8U Colors[N_COLOR + 2] = { DISP_FGND_RED + DISP_BGND_LIGHT_GRAY,
 
 									DISP_FGND_WHITE + DISP_BGND_LIGHT_GRAY,		// 경로 재생성 일 때 하얀색 표시
 									DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY };	// 정지된 상태 검은색 표시
-#define IDLE_COLOR DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY
-#define STOP_COLOR DISP_FGND_WHITE + DISP_BGND_LIGHT_GRAY
+#define STOP_COLOR DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY
+#define IDLE_COLOR DISP_FGND_WHITE + DISP_BGND_LIGHT_GRAY
 
 
 const int di[4] = { -1, 0, 1, 0 };
@@ -104,7 +104,7 @@ FILE* fp;
 // char logBuf[256];
 
 OS_EVENT* QOrder2Robot;					// 오더를 주면, 로봇이 선점해감
-void* QOrderTbl[N_ROBOT + 1];
+void* QOrderTbl[N_ROBOT + 2];
 
 OS_EVENT* MRequestRoute;					// 로봇이 경로를 요청할 떄 필요
 
@@ -119,7 +119,7 @@ OS_STK TaskStk[4][TASK_STK_SIZE];
 OS_STK TaskRobotStk[N_ROBOT][ROBOT_STK_SIZE];
 
 OS_MEM* ListBuf;
-INT8U ListPart[N_ROBOT + 1][sizeof(LIST)];
+INT8U ListPart[N_ROBOT * 2][sizeof(LIST)];
 
 Pos SHP[N_SHELVES];							// Shelves Point
 Pos TPP[N_PLACE];							// Transport Point
@@ -130,17 +130,17 @@ Pos BLP[N_FIXED_BLOCK+N_ROBOT+5];			// Blocked Point
 Pos robotObstacle[N_ROBOT];
 
 const Pos* shelves_ptr = SHP;
-  const Pos* trans_ptr = TPP;
-   const Pos* load_ptr = LDP;
-   const Pos* park_ptr = PKP;
+const Pos*   trans_ptr = TPP;
+const Pos*    load_ptr = LDP;
+const Pos*    park_ptr = PKP;
 const Pos* blocked_ptr = BLP;
 
 ROBOT_INFO robots[N_ROBOT];
 
 LIST busyShelves;
 
-INT16U idle_tpp;
-INT16U idle_ldp;
+INT16U idle_tpp = INITIAL_PLACE;
+INT16U idle_ldp = INITIAL_PLACE;
 
 // priority queue related
 PRIORITY_QUEUE pq;
@@ -221,19 +221,19 @@ int main(void)
 	
 	// initialize task
 	OSTaskCreate(TaskCentralControl, (void *)0, &TaskStk[0][TASK_STK_SIZE - 1], (INT8U)(TASK_PRIO / 3));
-	OSTaskCreate(TaskGetOrder,		 (void *)0, &TaskStk[1][TASK_STK_SIZE - 1], TASK_PRIO + N_ROBOT + 1);
-	OSTaskCreate(TaskGetOrder,		 (void *)0, &TaskStk[2][TASK_STK_SIZE - 1], TASK_PRIO + N_ROBOT + 2);
-	OSTaskCreate(TaskAssigntRoute,   (void *)0, &TaskStk[3][TASK_STK_SIZE - 1], (INT8U)(TASK_PRIO / 2));
+	for (i = 1; i < N_ROBOT+1; i++) 
+		OSTaskCreate(TaskRobotMove, (void *)0, &TaskRobotStk[i][ROBOT_STK_SIZE - 1], TASK_PRIO + i);
 
-	for (i = 1; i < N_ROBOT+1; i++) {
-//		OSTaskCreate(TaskRobotMove, (void *)0, &TaskRobotStk[i][ROBOT_STK_SIZE - 1], TASK_PRIO + i);
-	}
-	OSTaskCreate(TaskRobotMove, (void *)0, &TaskRobotStk[0][ROBOT_STK_SIZE - 1], TASK_PRIO);
+	OSTaskCreate(TaskGetOrder, (void *)0, &TaskStk[1][TASK_STK_SIZE - 1], TASK_PRIO + N_ROBOT + 1);
+	OSTaskCreate(TaskGetOrder, (void *)0, &TaskStk[2][TASK_STK_SIZE - 1], TASK_PRIO + N_ROBOT + 2);
+	OSTaskCreate(TaskAssigntRoute, (void *)0, &TaskStk[3][TASK_STK_SIZE - 1], (INT8U)(TASK_PRIO / 2));
 
-	QOrder2Robot = OSQCreate(QOrderTbl, N_ROBOT + 1);				//
+//	OSTaskCreate(TaskRobotMove, (void *)0, &TaskRobotStk[0][ROBOT_STK_SIZE - 1], TASK_PRIO);
+
+	QOrder2Robot = OSQCreate(QOrderTbl, N_ROBOT + 2);				//
 	MutexRobotSync = OSSemCreate(1);								// protect robot's location
 
-	ListBuf = OSMemCreate(ListPart, N_ROBOT + 1, sizeof(LIST), &ERR);
+	ListBuf = OSMemCreate(ListPart, N_ROBOT * 2, sizeof(LIST), &ERR);
 	memset(robotObstacle, 0, sizeof(Pos)*N_ROBOT);
 
 	OSStart();
@@ -256,8 +256,8 @@ void TaskCentralControl(void* pdata)
 	TaskStartDispInit();
 
 	for (i = 0; i < N_ROBOT; i++) {
-		robots[i].pos.i = 2;
-		robots[i].pos.j = 9;
+		robots[i].pos.i = 0;
+		robots[i].pos.j = 1;
 	}
 
 #ifdef DEBUG_MODE
@@ -302,8 +302,9 @@ void TaskRobotMove(void* pdata)
 	Pos g_route[N_ROUTE], l_route[N_ROUTE];
 
 	ROBOT_INFO* robot = &robots[robot_no];
-	robot->pos = park_ptr[robot_no];										// 로봇의 초기 위치 설정
-	robot->stat = IDLE;
+	robot->pos   = park_ptr[robot_no];										// 로봇의 초기 위치 설정
+	robot->stat  = IDLE;
+	robot->color = IDLE_COLOR;
 
 	SemRobot[robot_no] = OSSemCreate(0);
 
@@ -317,23 +318,28 @@ void TaskRobotMove(void* pdata)
 		robot->color = order.color;
 
 #ifdef DEBUG_MODE
-		fprintf(fp, "%d TaskRobotMove() 오더 전달받음\n", robot_no);
+		if (OS_NO_ERR != ERR) {
+			fprintf(fp, "\n%d TaskRobotMove() OSQPend Error occured\n", robot_no);
+			exit(1);
+		}
+		fprintf(fp, "%d TaskRobotMove() OSQPend를 통해 오더 전달받음\n", robot_no);
 #endif
 
 		// set robot's destinations
 		g_dest[0] = robot->pos;
 		g_dest[3] = robot->pos;
 		if (order.kind == TRANSPORT) {
-			g_dest[1] = frontOfShelf(shelves_ptr[order.shelf]);
-			g_dest[2] = trans_ptr[order.workspace];
+			g_dest[1]  = frontOfShelf(shelves_ptr[order.shelf]);
+			g_dest[2]  = trans_ptr[order.workspace];
 			idle_place = &idle_tpp;
 		}
 		else if (order.kind == STORE) {
-			g_dest[1] = load_ptr[order.workspace];
-			g_dest[2] = frontOfShelf(shelves_ptr[order.shelf]);
+			g_dest[1]  = load_ptr[order.workspace];
+			g_dest[2]  = frontOfShelf(shelves_ptr[order.shelf]);
 			idle_place = &idle_ldp;
 		} 
 
+		// move 3 in stages
 		for (stage = 0; stage < 3; stage++) {
 			route = g_route;
 			request.route     = route;
@@ -342,27 +348,28 @@ void TaskRobotMove(void* pdata)
 			request.steps     = &steps;
 
 #ifdef DEBUG_MODE
-			fprintf(fp, "\n%d TaskRobotMove() 전역경로 요청\n", robot_no);
-			fprintf(fp, "%d TaskRobotMove() from (%d, %d) to (%d, %d)\n", robot_no, request.departure.i,
-				request.departure.j, request.arrival.i, request.arrival.j);
+			fprintf(fp, "%d TaskRobotMove() global route request from (%d, %d) to (%d, %d)\n", robot_no,
+				request.departure.i, request.departure.j, request.arrival.i, request.arrival.j);
 #endif
 			
 			ERR = OSMboxPost(MRequestRoute, &request);						// request route to TaskAssignRoute
 #ifdef DEBUG_MODE
 			if (ERR != OS_NO_ERR) {
-				fprintf(fp, "%d TaskRobotMove() OSMboxPost() Error 발생\n", robot_no);
+				fprintf(fp, "%d TaskRobotMove() OSMboxPost() error occured\n", robot_no);
 				exit(1);
 			}
-			fprintf(fp, "%d TaskRobotMove() 경로 요청완료\n", robot_no);
+			fprintf(fp, "%d TaskRobotMove() OSMboxPost() complete\n", robot_no);
 #endif
 
 			OSSemPend(SemRobot[robot_no], 0, &ERR);							// receive robot's route	
 #ifdef DEBUG_MODE
 			if (ERR != OS_NO_ERR) {
-				fprintf(fp, "%d TaskRobotMove() OSSemPend() Error 발생\n", robot_no);
+				fprintf(fp, "%d TaskRobotMove() OSSemPend() error occured\n", robot_no);
 				exit(1);
 			}
-			fprintf(fp, "%d TaskRobotMove() 전역경로 할당 완료 steps: %d\n", robot_no, steps);
+			fprintf(fp, "%d TaskRobotMove() OSSemPend() complete\n", robot_no);
+			fprintf(fp, "%d TaskRobotMove() got global route from (%d, %d) to (%d, %d) steps: %d\n", robot_no,
+				request.departure.i, request.departure.j, request.arrival.i, request.arrival.j, steps);
 #endif
 
 			// move along the route until arrival
@@ -538,10 +545,12 @@ void TaskAssigntRoute(void* pdata)
 		//		request = *((REQUEST_INFO *)OSQPend(QRequestRoute, 0, &ERR));
 		request = *((REQUEST_INFO *)OSMboxPend(MRequestRoute, 0, &ERR));
 #ifdef DEBUG_MODE
-		if (ERR != OS_NO_ERR) {
-			fprintf(fp, "TaskAssigntRoute() OSMboxPend Error 발생\n");
+		if (OS_NO_ERR != ERR) {
+			fprintf(fp, "TaskAssigntRoute() OSMboxPend[%d robot] error occured.\n", request.robot_no);
+			exit(1);
 		}
-		fprintf(fp, "TaskAssigntRoute() 경로요청 수신\n");
+		fprintf(fp, "TaskAssigntRoute() OSMboxPend[%d robot] completed.\n", request.robot_no);
+		fprintf(fp, "TaskAssigntRoute() received route request from %d robot.\n", request.robot_no);
 #endif
 
 		// ****************** 수정해야함 ****************** 
@@ -559,10 +568,12 @@ void TaskAssigntRoute(void* pdata)
 		
 		ERR = OSSemPost(SemRobot[request.robot_no]);			// complete assign route
 #ifdef DEBUG_MODE
-		if (ERR != OS_NO_ERR) {
-			fprintf(fp, "TaskAssigntRoute() OSSemPost[%d] Error 발생\n", request.robot_no);
+		if (OS_NO_ERR != ERR) {
+			fprintf(fp, "TaskAssigntRoute() OSSemPost[%d robot] error occured.\n", request.robot_no);
+			exit(1);
 		}
-		fprintf(fp, "TaskAssigntRoute() 로봇 %d 경로할당 완료\n", request.robot_no);
+		fprintf(fp, "TaskAssigntRoute() OSSemPost[%d robot] completed.\n", request.robot_no)
+		fprintf(fp, "TaskAssigntRoute() assign %d robot's route.\n", request.robot_no);
 #endif
 
 		OSTimeDly(1);
@@ -589,25 +600,25 @@ void TaskGetOrder(void* pdata)
 	else if (kind == STORE) {
 		idle_place = &idle_ldp;
 	}
-	*idle_place = INITIAL_PLACE;
 	
 	SemWorkSpace[kind] = OSSemCreate(N_PLACE);				// 뮤텍스로 바꿔
 
-	while (1) {
 #ifdef DEBUG_MODE
-		fprintf(fp, "\n%d TaskGetOrder Routine Start\n", kind);
+	fprintf(fp, "\n%d TaskGetOrder Routine Start\n", kind);
 #endif
-
+	while (1) {
 		OSSemPend(SemWorkSpace[kind], 0, &ERR);			// check that all places are busy
 #ifdef DEBUG_MODE
-		if (ERR = OS_NO_ERR){
+		if (OS_NO_ERR != ERR){
 			fprintf(fp, "%d TaskGetOrder OSSemPend() Error 발생\n", kind);
 			exit(1);
 		}
 		fprintf(fp, "%d TaskGetOrder OSSemPend() 완료\n", kind);
 #endif
-		place = getIdleTurn(idle_place, N_PLACE);
+		place = getIdleTurn(idle_place, N_PLACE);	
+//		fprintf(fp, "complete place %d ", place);					// ***** test code *****
 		shelf = getIdleShelfNum();
+//		fprintf(fp, "complete shelf %d\n", shelf);					// ***** test code *****
 
 		order.workspace = place;
 		order.shelf     = shelf;
@@ -618,20 +629,19 @@ void TaskGetOrder(void* pdata)
 
 #ifdef DEBUG_MODE
 		fprintf(fp, "%d TaskGetOrder - workspace %d shelf %d\n", kind, place, shelf);
-		fprintf(fp, "idle_place: %b", *idle_place);
+//		fprintf(fp, "idle_place: %X\n", *idle_place);				// ***** test code *****
 #endif
 
-//		OSMboxPost(MOrder2Robot[robot], &order);	// send order to the robot task by the robot's mailbox
-		ERR = OSQPost(QOrder2Robot, &order);
+		ERR = OSQPost(QOrder2Robot, &order);						// ***** test code *****
 #ifdef DEBUG_MODE
-		if (ERR != OS_NO_ERR) {
+		if (OS_NO_ERR != ERR) {
 			fprintf(fp, "%d TaskGetOrder OSQPost() Error 발생\n", kind);
+			exit(1);
 		}
 		fprintf(fp, "%d TaskGetOrder OSQPost() 완료\n", kind);
-		fprintf(fp, "%d TaskGetOrder - workspace %d shelf %d\n", kind, place, shelf);
-		fprintf(fp, "idle_place: %b", *idle_place);
 #endif
-		OSTimeDly((INT8U)(rand() % 10 + 15));
+		OSTimeDly((INT8U)(rand() % 10 + 3));						// ***** test code *****
+//		OSTimeDly(1);												// ***** test code *****
 	} 
 }
 
@@ -690,6 +700,9 @@ static void TaskViewClear()
 	char clear[3] = " ";
 
 //	PC_DispStr(0, 1, " ||      ll      ll      ll      ll      ll      ll      ll      ll      ll", DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);
+	for (i = 0; i < 9; i++) 
+		PC_DispStr(3 + i * 8, 1, "    ", DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);
+	
 	PC_DispStr(0, 2, " l                                                                        l", DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);
 	PC_DispStr(0, 3, " l                                                                        l        ", DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);
 
@@ -714,6 +727,8 @@ static void TaskViewClear()
 	PC_DispStr(0, 21, " l                                                                        l", DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);
 	PC_DispStr(0, 22, " l                                                                        l", DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);
 //	PC_DispStr(0, 23, " ||      ll      ll      ll      ll      ll      ll      ll      ll      ll", DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);
+	for (i = 0; i < 9; i++)
+		PC_DispStr(3 + i * 8, 23, "    ", DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);
 
 	/*	// clear texts
 	PC_DispStr(79, 4, clear, DISP_FGND_BLACK + DISP_BGND_LIGHT_GRAY);	//
@@ -995,6 +1010,7 @@ __inline INT8U isSamePos(const Pos p1, const Pos p2)
 
 INT8U getIdleTurn(INT16U* code, INT8U size) 
 {
+	srand(time((void *)0));
 	INT8U n = (INT8U)(rand() % size);
 
 	while (!(*code & (1 << n))) {
@@ -1012,9 +1028,16 @@ void returnTurn(INT16U* code, INT8U turn)
 
 INT8U getIdleShelfNum() 
 {
+	srand(time((void *)0));
 	INT8U n = rand() % N_SHELVES, ERR;
 	LIST* head = busyShelves.next;
 	LIST* temp = OSMemGet(ListBuf, &ERR);
+#ifdef DEBUG_MODE
+	if (OS_NO_ERR != ERR) {
+		fprintf(fp, "getIdleShelfNum() OSMemGet Error 발생\n");
+		exit(1);
+	}
+#endif
 	
 	while (head != (void *)0) {
 		if (n == head->n) {
@@ -1163,12 +1186,14 @@ void initialize_map()
 	INT8U n = 0, m = 0;
 	Pos p[4], temp;
 
+	memset(BLP, 0, sizeof(Pos)*N_FIXED_BLOCK + N_ROBOT + 5);
+
 	// set blocked point, park point
 	p[0].i = 0;  p[0].j = 0; p[1].i = 0;  p[1].j = 3;
 	p[2].i = 22; p[2].j = 0; p[3].i = 22; p[3].j = 3;
 	for (INT8U i = 0; i < 9; i++) {
 		for (INT8U j = 0; j < 4; j++) {
-			BLP[n++] = p[j];
+//			BLP[n++] = p[j];					// 주차 위치를 blocked로 설정하지 않으면, 제자리로 돌아가지 못함
 
 			temp = p[j];
 			if (j == 1 && i != 8) {
@@ -1191,9 +1216,11 @@ void initialize_map()
 		p[2].i = 13; p[2].j = 2 + 5 * i; p[3].i = 13; p[3].j = 3 + 5 * i;
 		for (INT8U j = 0; j < 7; j++) {
 			for (INT8U k = 0; k < 4; k++) {
-				SHP[n++] = p[k];
-				BLP[n++] = p[k];
+				SHP[n] = p[k];
+				BLP[n] = p[k];
+				n += 1;
 
+				/* 왜 했는지 모르겠네, 이거는 선반 앞의 위치
 				temp = p[k];
 				if (k % 2 == 0) {
 					temp.j -= 1;
@@ -1203,6 +1230,7 @@ void initialize_map()
 					temp.j += 1;
 					SHP[m++] = temp;
 				}
+				*/
 
 				p[k].i += 1;
 			}
